@@ -13,6 +13,7 @@ function updateMoonlitAccounts(e) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var displaySheet = ss.getSheetByName("MoonlitDisplay");
   var dataSheet = ss.getSheetByName("MoonlitData");
+  var empSheet = ss.getSheetByName("MoonlitEmployeeInfo");
   var timezone = ss.getSpreadsheetTimeZone();
   
   // Read start and end dates from MoonlitDisplay (cells A2 and B2)
@@ -138,6 +139,38 @@ function updateMoonlitAccounts(e) {
   // Write the totals summary in the next available row in column D.
   var totalsRow = 4 + output.length;
   displaySheet.getRange(totalsRow, 4).setValue(totalsOutput);
+
+  // Sync total accounts to MoonlitEmployeeInfo -> header "Accts"
+  if (empSheet) {
+    var empHeader = empSheet.getRange(1, 1, 1, empSheet.getLastColumn()).getValues()[0];
+    var acctsCol = -1;
+    for (var h = 0; h < empHeader.length; h++) {
+      if (String(empHeader[h] || "").trim().toLowerCase() === "accts") {
+        acctsCol = h + 1;
+        break;
+      }
+    }
+
+    if (acctsCol > 0) {
+      var empLastRow = empSheet.getLastRow();
+      if (empLastRow >= 2) {
+        // Clear current Accts values before writing new totals.
+        empSheet.getRange(2, acctsCol, empLastRow - 1, 1).clearContent();
+
+        var empNames = empSheet.getRange(2, 1, empLastRow - 1, 1).getValues();
+        var acctsOut = empNames.map(function(r) {
+          var name = String(r[0] || "").trim();
+          if (!name) return [""];
+          var amounts = totals[name];
+          if (!amounts || !amounts.length) return [""];
+          var sum = amounts.reduce(function(a, b) { return a + b; }, 0);
+          return [sum];
+        });
+
+        empSheet.getRange(2, acctsCol, acctsOut.length, 1).setValues(acctsOut);
+      }
+    }
+  }
 }
 
 function updateBillsDisplay(e) {
@@ -265,10 +298,23 @@ function updateSalaryDisplay(e) {
   const endDateStr   = Utilities.formatDate(endDateCell,   timezone, "MM/dd/yyyy");
 
   // 3) Write the header into E3, then clear any old results E4:E
+  const lastDisplayRow = displaySheet.getLastRow();
+  const existingE = displaySheet.getRange(4, 5, Math.max(lastDisplayRow - 3, 1), 1).getDisplayValues();
+  let lastNonEmptyERow = 3;
+  for (let i = existingE.length - 1; i >= 0; i--) {
+    if (String(existingE[i][0] || "").trim() !== "") {
+      lastNonEmptyERow = i + 4;
+      break;
+    }
+  }
+
   displaySheet.getRange("E3").setValue(
     "Attendance from " + startDateStr + " to " + endDateStr
   );
   displaySheet.getRange("E4:E100").clearContent();
+  if (lastNonEmptyERow >= 4) {
+    displaySheet.getRange(4, 12, lastNonEmptyERow - 3, 1).clearContent();
+  }
 
   // 4) Build a map: employeeName -> attendanceAmount (a floating‐point sum),
   //    by scanning MoonlitData rows 2→lastRow for any date within [startDate, endDate].
@@ -389,6 +435,7 @@ function updateSalaryDisplay(e) {
 
   // 6) Build each employee’s salary‐breakdown line
   const output = [];
+  const roundedNetSalaries = [];
   Object.keys(attendanceCounts).forEach(empName => {
     const att = attendanceCounts[empName];
     // Round attendance to, say, 6 decimals (optional). You can leave it un‐rounded if you want full precision.
@@ -440,6 +487,9 @@ function updateSalaryDisplay(e) {
     deductionsArr.forEach(d => deductionSum += d.value);
     const gross = sumDaily + totalAdditional + totalSolo + totalBakeryAllow;
     const netSalary = gross - deductionSum;
+    const roundedNetSalary = netSalary >= 0
+      ? Math.floor(netSalary + 0.5)
+      : Math.ceil(netSalary - 0.5);
 
     // 7) Build the output string exactly in the requested format
     let line = empName + ": " +
@@ -474,11 +524,13 @@ function updateSalaryDisplay(e) {
     }
 
     output.push([line]);
+    roundedNetSalaries.push([roundedNetSalary]);
   });
 
   // 9) Finally, write all salary‐breakdown lines into E4, E5, E6, …  
   if (output.length) {
     displaySheet.getRange(4, 5, output.length, 1).setValues(output);
+    displaySheet.getRange(4, 12, roundedNetSalaries.length, 1).setValues(roundedNetSalaries);
   }
 }
 
