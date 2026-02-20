@@ -284,6 +284,9 @@ function updateSalaryDisplay(e) {
   const dataSheet    = ss.getSheetByName("MoonlitData");
   const empSheet     = ss.getSheetByName("MoonlitEmployeeInfo");
   const timezone     = ss.getSpreadsheetTimeZone();
+  const docName      = "Display Sweldo";
+  const docId        = "1exhAo09Fu_lIkr2bWi6E7I9QcIvimVtKaKs3lP7lhQY"; // Recommended: paste the Doc ID from the URL here.
+  const excludedName = "Dina";
 
   // 1) Read the date range from A2:B2
   const startDateCell = displaySheet.getRange("A2").getValue();
@@ -436,6 +439,8 @@ function updateSalaryDisplay(e) {
   // 6) Build each employee’s salary‐breakdown line
   const output = [];
   const roundedNetSalaries = [];
+  const docLines = [];
+  const docRoundedNetSalaries = [];
   Object.keys(attendanceCounts).forEach(empName => {
     const att = attendanceCounts[empName];
     // Round attendance to, say, 6 decimals (optional). You can leave it un‐rounded if you want full precision.
@@ -512,7 +517,7 @@ function updateSalaryDisplay(e) {
     deductionsArr.forEach(d => {
       line += " - " + d.label + " " + d.value;
     });
-    line += " = Net Salary " + netSalary;
+    line += " = Net Salary " + netSalary + " = " + roundedNetSalary;
 
     // 8) If there is a previous balance > 0, also show: “Previous Balance X - Cash Advances X = Current Balance Y”
     if (prevBal > 0) {
@@ -525,6 +530,10 @@ function updateSalaryDisplay(e) {
 
     output.push([line]);
     roundedNetSalaries.push([roundedNetSalary]);
+    if (String(empName || "").trim().toLowerCase() !== excludedName.toLowerCase()) {
+      docLines.push(line);
+      docRoundedNetSalaries.push(roundedNetSalary);
+    }
   });
 
   // 9) Finally, write all salary‐breakdown lines into E4, E5, E6, …  
@@ -532,6 +541,95 @@ function updateSalaryDisplay(e) {
     displaySheet.getRange(4, 5, output.length, 1).setValues(output);
     displaySheet.getRange(4, 12, roundedNetSalaries.length, 1).setValues(roundedNetSalaries);
   }
+
+  // 10) Append salary output to Google Doc "Display Sweldo" without deleting old content.
+  // Drive/Docs calls require an installable edit trigger (AuthMode.FULL).
+  const canAppendToDoc = !e || e.authMode === ScriptApp.AuthMode.FULL;
+  if (canAppendToDoc) {
+    try {
+      appendSalaryDisplayToDoc_({
+        docId: docId,
+        docName: docName,
+        headerLine: "Moonlit Attendance from " + startDateStr + " to " + endDateStr + ":",
+        salaryLines: docLines,
+        roundedNetSalaries: docRoundedNetSalaries
+      });
+    } catch (err) {
+      Logger.log("appendSalaryDisplayToDoc_ failed: " + err);
+    }
+  } else {
+    Logger.log("Skipped Google Doc append. Use an installable onEdit trigger for Drive/Docs access.");
+  }
+}
+
+function appendSalaryDisplayToDoc_(params) {
+  const docId = String(params.docId || "").trim();
+  const docName = params.docName;
+  const headerLine = params.headerLine;
+  const salaryLines = params.salaryLines || [];
+  const roundedNetSalaries = params.roundedNetSalaries || [];
+
+  // Prefer direct ID lookup (more reliable than name lookup).
+  if (docId) {
+    const doc = DocumentApp.openById(docId);
+    const body = doc.getBody();
+    if (body.getNumChildren() > 0) body.appendParagraph("");
+    body.appendParagraph(headerLine).setBold(true);
+    salaryLines.forEach(line => {
+      body.appendParagraph(line).setBold(false);
+      body.appendParagraph("").setBold(false);
+    });
+    const totalById = roundedNetSalaries.reduce((sum, value) => sum + (parseFloat(value) || 0), 0);
+    if (roundedNetSalaries.length > 0) {
+      body.appendParagraph("Total Salary Moonlit:").setBold(false);
+      body.appendParagraph(roundedNetSalaries.join("+") + "=" + totalById).setBold(false);
+    }
+    doc.saveAndClose();
+    return;
+  }
+
+  const files = DriveApp.getFilesByName(docName);
+  const docs = [];
+  while (files.hasNext()) {
+    const f = files.next();
+    if (f.getMimeType() === MimeType.GOOGLE_DOCS) docs.push(f);
+  }
+
+  if (docs.length === 0) {
+    const candidates = [];
+    const q = DriveApp.searchFiles(
+      "mimeType='application/vnd.google-apps.document' and title contains 'Display'"
+    );
+    let n = 0;
+    while (q.hasNext() && n < 10) {
+      const c = q.next();
+      candidates.push(c.getName() + " [" + c.getId() + "]");
+      n++;
+    }
+    Logger.log("No exact doc name match for '%s'. Visible candidate docs: %s", docName, candidates.join(" | "));
+    throw new Error('Google Doc named "' + docName + '" was not found. Use docId for exact targeting.');
+  }
+
+  const doc = DocumentApp.openById(docs[0].getId());
+  const body = doc.getBody();
+
+  if (body.getNumChildren() > 0) {
+    body.appendParagraph("");
+  }
+
+  body.appendParagraph(headerLine).setBold(true);
+  salaryLines.forEach(line => {
+    body.appendParagraph(line).setBold(false);
+    body.appendParagraph("").setBold(false);
+  });
+
+  const total = roundedNetSalaries.reduce((sum, value) => sum + (parseFloat(value) || 0), 0);
+  if (roundedNetSalaries.length > 0) {
+    body.appendParagraph("Total Salary Moonlit:").setBold(false);
+    body.appendParagraph(roundedNetSalaries.join("+") + "=" + total).setBold(false);
+  }
+
+  doc.saveAndClose();
 }
 
 
